@@ -4,16 +4,17 @@ namespace Physics
 {
     public class HitBox : PhysicsObject
     {
-        private Action<HitInfo> hitEvent;
-
-        public void Initialize(Action<HitInfo> hitEvent)
-        {
-            base.Initialize();
-            this.hitEvent = hitEvent;
-        }
-
         public override PhysicsType physicsType => PhysicsType.HITABLE;
 
-        public void OnHitEvent(HitInfo hitInfo) => hitEvent?.Invoke(hitInfo);
+        private Action<CollisionInfoData> hitEvent;
+
+        public void Initialize(Action<CollisionInfoData> collisionEventListener)
+        {
+            base.PhysicsInitialize();
+            this.hitEvent = collisionEventListener;
+        }
+
+
+        public void OnHitEvent(CollisionInfoData infos) => hitEvent?.Invoke(infos);
     }
 }

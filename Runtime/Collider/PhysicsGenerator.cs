@@ -109,7 +109,7 @@ namespace Physics
                     {
                         hitObject = hitableOb,
                         hitPoint = collisionInfo.contactPointA,
-                        sweepProgress = ComputeProgressAlongMotion(attackableOb.prevPhysicsShape.Center, attackableOb.currPhysicsShape.Center, collisionInfo.contactPointA)
+                        sweepProgress = DistanceAlongMotion(attackableOb.prevPhysicsShape.Center, attackableOb.currPhysicsShape.Center, collisionInfo.contactPointA)
                     };
 
 
@@ -124,7 +124,7 @@ namespace Physics
             }
         }
 
-        private float ComputeProgressAlongMotion(float3 prev, float3 curr, float3 contactPoint)
+        private float DistanceAlongMotion(float3 prev, float3 curr, float3 contactPoint)
         {
             float3 movement = curr - prev;
             float lenSq = math.lengthsq(movement);

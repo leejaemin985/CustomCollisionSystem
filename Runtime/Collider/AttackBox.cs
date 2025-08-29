@@ -12,11 +12,10 @@ namespace Physics
 
         private Action<CollisionInfos> hitEvent;
 
-        public void Initialize(Action<CollisionInfos> hitEvent = null)
+        public void Initialize(Action<CollisionInfos> collisionEventListener = null)
         {
-            base.Initialize();
-
-            this.hitEvent = hitEvent;
+            base.PhysicsInitialize();
+            this.hitEvent = collisionEventListener;
         }
 
         public void AddIgnoreUid(PhysicsObject ignorePhysics)
