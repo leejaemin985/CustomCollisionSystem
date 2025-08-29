@@ -1,1 +1,12 @@
-{ "name": "CustomCollision.Runtime", "rootNamespace": "CustomCollision", "autoReferenced": true }
+{
+  "name": "CustomCollision.Runtime",
+  "rootNamespace": "CustomCollision",
+  "autoReferenced": true,
+  "references": [ "Unity.Mathematics" ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "defineConstraints": [],
+  "noEngineReferences": false
+}
