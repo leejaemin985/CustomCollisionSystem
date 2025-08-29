@@ -1,0 +1,31 @@
+{
+
+    "name": "com.customcollision",
+
+    "version": "0.1.0",
+
+    "displayName": "CCD",
+
+    "description": "충돌을 감지하는 커스텀 충돌 감지시스템입니다.",
+
+    "unity": "2022.3",
+
+    "author": {
+
+      "name": "Leejaemin",
+
+      "url": "https://github.com/leejaemin985/CustomCollisionSystem.git"
+
+    },
+
+    "keywords": [
+
+      "Folder",
+
+      "Organizer",
+
+      "Asset"
+
+    ]
+
+}
