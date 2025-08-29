@@ -1,0 +1,1 @@
+{ "name": "CustomCollision.Editor", "rootNamespace": "CustomCollision.Editor", "references": ["CustomCollision.Runtime"], "includePlatforms": ["Editor"], "autoReferenced": true }
