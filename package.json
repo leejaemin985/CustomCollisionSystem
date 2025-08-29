@@ -1,31 +1,21 @@
 {
-
-    "name": "com.customcollision",
-
-    "version": "0.1.0",
-
-    "displayName": "CustomCCD",
-
-    "description": "충돌을 감지하는 커스텀 충돌 감지시스템입니다.",
-
-    "unity": "2022.3",
-
-    "author": {
-
-      "name": "Leejaemin",
-
-      "url": "https://github.com/leejaemin985/CustomCollisionSystem.git"
-
-    },
-
-    "keywords": [
-
-      "Folder",
-
-      "Organizer",
-
-      "Asset"
-
-    ]
-
+  "name": "com.customcollision",
+  "version": "0.1.0",
+  "displayName": "Custom CCD",
+  "description": "충돌을 감지하는 커스텀 충돌 감지 시스템입니다.",
+  "unity": "2022.3",
+  "dependencies": {
+    "com.unity.mathematics": "1.2.6"
+  },
+  "author": {
+    "name": "Leejaemin",
+    "url": "https://github.com/leejaemin985/CustomCollisionSystem"
+  },
+  "keywords": [
+    "Collision",
+    "CCD",
+    "Physics",
+    "OBB",
+    "Capsule"
+  ]
 }
