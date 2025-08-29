@@ -4,7 +4,7 @@
 
     "version": "0.1.0",
 
-    "displayName": "CCD",
+    "displayName": "CustomCCD",
 
     "description": "충돌을 감지하는 커스텀 충돌 감지시스템입니다.",
 
