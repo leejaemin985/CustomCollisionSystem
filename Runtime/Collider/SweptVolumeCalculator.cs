@@ -6,108 +6,195 @@ namespace Physics
     {
         public static OBB ComputeSweptOBBFromOBB(OBB a, OBB b)
         {
-            float3 movement = b.center - a.center;
-            float movementLen = math.length(movement);
+            float3 v = b.center - a.center;
+            float vLen = math.length(v);
 
-            // 기준 축: 회전이 급변하지 않았다고 가정하고 a의 회전 유지
-            float3[] axis = a.axis;
+            // 1) 새 기준축 구성
+            float3 u0, u1, u2;
 
-            // 중심점: 중간 지점
-            float3 center = (a.center + b.center) * 0.5f;
-
-            // 반지름은 두 OBB의 각 축에 대해 최대 halfExtent 선택
-            float3 maxHalfSize = new float3();
-            for (int i = 0; i < 3; ++i)
+            if (vLen > 1e-6f)
             {
-                float extentA = a.halfSize[i];
-                float extentB = b.halfSize[i];
-                maxHalfSize[i] = math.max(extentA, extentB);
+                // 이동 방향을 첫 축으로
+                u0 = v / vLen;
+
+                // a.axis 중 u0와 가장 수직인 축을 골라 보조축 시드로
+                int seed = 0;
+                float minAbsDot = float.MaxValue;
+                for (int i = 0; i < 3; ++i)
+                {
+                    float d = math.abs(math.dot(a.axis[i], u0));
+                    if (d < minAbsDot) { minAbsDot = d; seed = i; }
+                }
+
+                // Gram–Schmidt로 직교화
+                float3 t1 = a.axis[seed] - math.dot(a.axis[seed], u0) * u0;
+                float t1Len = math.length(t1);
+                if (t1Len < 1e-6f)
+                {
+                    // 드물게 축이 거의 평행하면 임의의 직교 벡터 선택
+                    t1 = math.normalize(math.cross(u0, new float3(0, 1, 0)));
+                    if (math.lengthsq(t1) < 1e-6f) t1 = math.normalize(math.cross(u0, new float3(1, 0, 0)));
+                }
+                u1 = math.normalize(t1);
+                u2 = math.normalize(math.cross(u0, u1));
+            }
+            else
+            {
+                // 이동이 거의 없으면 a의 축을 그대로 쓰되 수치 안정화
+                u0 = math.normalize(a.axis[0]);
+                // a.axis[1]을 u0에 직교화
+                float3 t1 = a.axis[1] - math.dot(a.axis[1], u0) * u0;
+                float t1Len = math.length(t1);
+                if (t1Len < 1e-6f)
+                {
+                    // degeneracy 방지
+                    t1 = math.normalize(math.cross(u0, new float3(0, 1, 0)));
+                    if (math.lengthsq(t1) < 1e-6f) t1 = math.normalize(math.cross(u0, new float3(1, 0, 0)));
+                }
+                u1 = math.normalize(t1);
+                u2 = math.normalize(math.cross(u0, u1));
             }
 
-            // movement를 각 축에 투영해서 더함 (움직인 방향에만 반응)
-            for (int i = 0; i < 3; ++i)
+            // 2) A와 B의 꼭짓점 모으기
+            var va = a.GetVertices();
+            var vb = b.GetVertices();
+
+            // 3) 새 축(u0,u1,u2)에 투영해서 최소 OBB 구하기 (이 축들에 한정된 최소)
+            float3 minProj = new float3(float.PositiveInfinity);
+            float3 maxProj = new float3(float.NegativeInfinity);
+
+            void AccProj(float3 p)
             {
-                float proj = math.abs(math.dot(movement, axis[i])) * 0.5f;
-                maxHalfSize[i] += proj;
+                float p0 = math.dot(p, u0);
+                float p1 = math.dot(p, u1);
+                float p2 = math.dot(p, u2);
+                minProj = math.min(minProj, new float3(p0, p1, p2));
+                maxProj = math.max(maxProj, new float3(p0, p1, p2));
             }
 
-            return new OBB(center, axis, maxHalfSize);
+            for (int i = 0; i < 8; ++i) { AccProj(va[i]); AccProj(vb[i]); }
+
+            float3 centerLocal = 0.5f * (minProj + maxProj);
+            float3 halfSize = 0.5f * (maxProj - minProj);
+
+            // 4) 로컬 중심을 월드로 복원
+            float3 center =
+                centerLocal.x * u0 +
+                centerLocal.y * u1 +
+                centerLocal.z * u2;
+
+            return new OBB(center, new float3[] { u0, u1, u2 }, halfSize);
         }
 
         public static OBB ComputeSweptOBBFromCapsule(Capsule a, Capsule b)
         {
-            // Capsule → OBB 변환 (내부 함수)
-            static OBB CapsuleToOBB(Capsule capsule)
+            // --- Capsule → OBB: 반지름과 축을 보존하는 타이트한 근사 ---
+            static OBB CapsuleToOBB(Capsule c)
             {
-                float3 dir = capsule.pointB - capsule.pointA;
-                float height = math.length(dir);
+                float3 upDir = c.pointB - c.pointA;
+                float h = math.length(upDir);
 
-                float3 up = height > 1e-5f ? dir / height : math.up();
+                float3 up = h > 1e-6f ? upDir / h : new float3(0, 1, 0);
 
-                float3 arbitrary = math.abs(math.dot(up, math.up())) < 0.999f ? math.up() : math.right();
+                // 임의 직교 벡터 선택
+                float3 pick = math.abs(math.dot(up, new float3(0, 1, 0))) < 0.999f
+                    ? new float3(0, 1, 0)
+                    : new float3(1, 0, 0);
 
-                float3 forward = math.normalize(math.cross(up, arbitrary));
+                float3 forward = math.normalize(math.cross(up, pick));
                 float3 right = math.normalize(math.cross(forward, up));
-                forward = math.normalize(math.cross(right, up));
+                forward = math.normalize(math.cross(right, up)); // 수치 안정화
 
-                float3[] axis = new float3[3] { right, up, forward };
+                // 캡슐 외접 OBB halfSize: X/Z는 radius, Y는 (halfHeight + radius)
+                float halfHeight = h * 0.5f;
+                float3 halfSize = new float3(c.radius, halfHeight + c.radius, c.radius);
 
-                float halfHeight = height * 0.5f;
+                float3 center = (c.pointA + c.pointB) * 0.5f;
 
-                float3 halfSize = new float3(capsule.radius, halfHeight + capsule.radius, capsule.radius);
-
-                float3 center = (capsule.pointA + capsule.pointB) * 0.5f;
-
-                return new OBB(center, axis, halfSize);
+                return new OBB(center, new float3[] { right, up, forward }, halfSize);
             }
 
             OBB obbA = CapsuleToOBB(a);
             OBB obbB = CapsuleToOBB(b);
 
-            float3[] vertsA = obbA.GetVertices();
-            float3[] vertsB = obbB.GetVertices();
+            // A/B 꼭짓점 수집
+            var va = obbA.GetVertices();
+            var vb = obbB.GetVertices();
 
-            float3[] points = new float3[16];
-            for (int i = 0; i < 8; ++i)
+            float3[] pts = new float3[16];
+            for (int i = 0; i < 8; ++i) { pts[i] = va[i]; pts[i + 8] = vb[i]; }
+
+            // --- 새 기준축 구성: 이동 방향 우선 ---
+            float3 move = obbB.center - obbA.center;
+            float mLen = math.length(move);
+
+            float3 u0, u1, u2;
+            if (mLen > 1e-6f)
             {
-                points[i] = vertsA[i];
-                points[i + 8] = vertsB[i];
-            }
+                u0 = move / mLen; // 이동 방향
 
-            float3 movement = obbB.center - obbA.center;
-            float movementLen = math.length(movement);
-
-            if (movementLen < 1e-6f)
-            {
-                // 거의 움직이지 않았으면 기존 OBB 그대로 반환
-                return obbA;
-            }
-
-            float3[] axis = obbA.axis;
-
-            float3 minProj = new float3(float.PositiveInfinity);
-            float3 maxProj = new float3(float.NegativeInfinity);
-
-            foreach (var p in points)
-            {
+                // obbA.axis 중 u0와 가장 수직인 축을 시드로 골라 직교화
+                int seed = 0;
+                float minAbsDot = float.MaxValue;
                 for (int i = 0; i < 3; ++i)
                 {
-                    float dot = math.dot(p, axis[i]);
-                    minProj[i] = math.min(minProj[i], dot);
-                    maxProj[i] = math.max(maxProj[i], dot);
+                    float d = math.abs(math.dot(obbA.axis[i], u0));
+                    if (d < minAbsDot) { minAbsDot = d; seed = i; }
                 }
+
+                float3 t1 = obbA.axis[seed] - math.dot(obbA.axis[seed], u0) * u0;
+                float l1 = math.length(t1);
+                if (l1 < 1e-6f)
+                {
+                    // 드문 병렬 특이상황 회피
+                    t1 = math.normalize(math.cross(u0, new float3(0, 1, 0)));
+                    if (math.lengthsq(t1) < 1e-6f) t1 = math.normalize(math.cross(u0, new float3(1, 0, 0)));
+                }
+                u1 = math.normalize(t1);
+                u2 = math.normalize(math.cross(u0, u1));
             }
-
-            float3 halfSize = (maxProj - minProj) * 0.5f;
-
-            float3 center = float3.zero;
-            for (int i = 0; i < 3; ++i)
+            else
             {
-                center += axis[i] * ((minProj[i] + maxProj[i]) * 0.5f);
+                // 이동 거의 없음: obbA 기준으로 안정적인 직교기저 생성
+                u0 = math.normalize(obbA.axis[0]);
+
+                float3 t1 = obbA.axis[1] - math.dot(obbA.axis[1], u0) * u0;
+                float l1 = math.length(t1);
+                if (l1 < 1e-6f)
+                {
+                    t1 = math.normalize(math.cross(u0, new float3(0, 1, 0)));
+                    if (math.lengthsq(t1) < 1e-6f) t1 = math.normalize(math.cross(u0, new float3(1, 0, 0)));
+                }
+                u1 = math.normalize(t1);
+                u2 = math.normalize(math.cross(u0, u1));
             }
 
-            return new OBB(center, axis, halfSize);
+            // --- 투영으로 최소 바운딩(해당 축계 한정) ---
+            float3 minP = new float3(float.PositiveInfinity);
+            float3 maxP = new float3(float.NegativeInfinity);
+
+            void Acc(float3 p)
+            {
+                float p0 = math.dot(p, u0);
+                float p1 = math.dot(p, u1);
+                float p2 = math.dot(p, u2);
+                minP = math.min(minP, new float3(p0, p1, p2));
+                maxP = math.max(maxP, new float3(p0, p1, p2));
+            }
+
+            for (int i = 0; i < 16; ++i) Acc(pts[i]);
+
+            float3 centerLocal = 0.5f * (minP + maxP);
+            float3 halfSize = 0.5f * (maxP - minP);
+
+            float3 center =
+                centerLocal.x * u0 +
+                centerLocal.y * u1 +
+                centerLocal.z * u2;
+
+            return new OBB(center, new float3[] { u0, u1, u2 }, halfSize);
         }
+
 
         public static Capsule ComputeSweptCapsuleFromSphere(Sphere prev, Sphere curr)
         {

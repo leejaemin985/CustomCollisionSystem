@@ -8,7 +8,7 @@ namespace Physics
 
         private Action<CollisionInfoData> hitEvent;
 
-        public void Initialize(Action<CollisionInfoData> collisionEventListener)
+        public void Initialize(Action<CollisionInfoData> collisionEventListener = null)
         {
             base.PhysicsInitialize();
             this.hitEvent = collisionEventListener;
