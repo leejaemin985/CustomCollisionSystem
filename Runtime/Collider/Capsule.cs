@@ -2,7 +2,7 @@ using System;
 using UnityEngine;
 using Unity.Mathematics;
 
-namespace Physics
+namespace CustomPhysics
 {
     public struct Capsule : IPhysicsShape
     {

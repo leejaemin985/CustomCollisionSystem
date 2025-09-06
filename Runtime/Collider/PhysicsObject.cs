@@ -3,7 +3,7 @@ using UnityEngine;
 using UnityEditor;
 using Unity.Mathematics;
 
-namespace Physics
+namespace CustomPhysics
 {
     public abstract class PhysicsObject : MonoBehaviour
     {

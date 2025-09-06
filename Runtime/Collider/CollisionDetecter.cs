@@ -4,7 +4,7 @@ using Unity.Mathematics;
 
 using UnityEngine;
 
-namespace Physics
+namespace CustomPhysics
 {
     [Serializable]
     public struct CollisionInfo

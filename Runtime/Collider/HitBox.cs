@@ -1,6 +1,6 @@
 using System;
 
-namespace Physics
+namespace CustomPhysics
 {
     public class HitBox : PhysicsObject
     {

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace Physics
+namespace CustomPhysics
 {
     [Serializable]
     public class CollisionInfos

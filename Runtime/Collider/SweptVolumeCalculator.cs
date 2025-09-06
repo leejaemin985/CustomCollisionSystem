@@ -1,6 +1,6 @@
 ﻿using Unity.Mathematics;
 
-namespace Physics
+namespace CustomPhysics
 {
     public static class SweptVolumeCalculator
     {
