@@ -4,6 +4,7 @@ namespace CustomPhysics
 {
     public static class SweptVolumeCalculator
     {
+        #region Calculate OBB From OBB
         public static OBB ComputeSweptOBBFromOBB(OBB a, OBB b)
         {
             float3 moveVec = b.center - a.center;
@@ -98,9 +99,9 @@ namespace CustomPhysics
 
             return new OBB(center, new float3[] { u0, u1, u2 }, halfSize);
         }
+        #endregion
 
-
-
+        #region Calculate OBB From Capsule
         public static OBB ComputeSweptOBBFromCapsule(Capsule a, Capsule b)
         {
             // 1) 먼저 간단한 경우들 체크
@@ -376,13 +377,14 @@ namespace CustomPhysics
 
             return new OBB(center, new float3[] { u0, u1, u2 }, halfSize);
         }
+        #endregion
 
-
-
+        #region Calculate Capsule From Sphere
         public static Capsule ComputeSweptCapsuleFromSphere(Sphere prev, Sphere curr)
         {
             return new Capsule(prev.center, curr.center, math.max(prev.radius, curr.radius));
         }
+        #endregion
     }
 
 }
