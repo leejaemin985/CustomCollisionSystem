@@ -6,64 +6,77 @@ namespace CustomPhysics
     {
         public static OBB ComputeSweptOBBFromOBB(OBB a, OBB b)
         {
-            float3 v = b.center - a.center;
-            float vLen = math.length(v);
+            float3 moveVec = b.center - a.center;
+            float moveLen = math.length(moveVec);
 
-            // 1) 새 기준축 구성
-            float3 u0, u1, u2;
+            // 1) 여러 축 조합을 시도해서 가장 타이트한 것 선택
+            OBB bestOBB = default;
+            float bestVolume = float.MaxValue;
 
-            if (vLen > 1e-6f)
+            // 후보 축 세트들
+            float3[][] axisCandidates = new float3[][]
             {
-                // 이동 방향을 첫 축으로
-                u0 = v / vLen;
+        // Case 1: A의 축 기준
+        new float3[] { a.axis[0], a.axis[1], a.axis[2] },
+        
+        // Case 2: B의 축 기준  
+        new float3[] { b.axis[0], b.axis[1], b.axis[2] },
+        
+        // Case 3: 이동 방향 + A축 조합 (이동이 충분할 때만)
+        moveLen > 1e-3f ? new float3[] { moveVec / moveLen, a.axis[1], a.axis[2] } : null,
+        
+        // Case 4: 이동 방향 + B축 조합
+        moveLen > 1e-3f ? new float3[] { moveVec / moveLen, b.axis[1], b.axis[2] } : null,
+        
+        // Case 5: A와 B축의 평균 (각도 차이가 작을 때 유효)
+        new float3[] {
+            math.normalize(a.axis[0] + b.axis[0]),
+            math.normalize(a.axis[1] + b.axis[1]),
+            math.normalize(a.axis[2] + b.axis[2])
+        }
+            };
 
-                // a.axis 중 u0와 가장 수직인 축을 골라 보조축 시드로
-                int seed = 0;
-                float minAbsDot = float.MaxValue;
-                for (int i = 0; i < 3; ++i)
-                {
-                    float d = math.abs(math.dot(a.axis[i], u0));
-                    if (d < minAbsDot) { minAbsDot = d; seed = i; }
-                }
-
-                // Gram–Schmidt로 직교화
-                float3 t1 = a.axis[seed] - math.dot(a.axis[seed], u0) * u0;
-                float t1Len = math.length(t1);
-                if (t1Len < 1e-6f)
-                {
-                    // 드물게 축이 거의 평행하면 임의의 직교 벡터 선택
-                    t1 = math.normalize(math.cross(u0, new float3(0, 1, 0)));
-                    if (math.lengthsq(t1) < 1e-6f) t1 = math.normalize(math.cross(u0, new float3(1, 0, 0)));
-                }
-                u1 = math.normalize(t1);
-                u2 = math.normalize(math.cross(u0, u1));
-            }
-            else
+            foreach (var axes in axisCandidates)
             {
-                // 이동이 거의 없으면 a의 축을 그대로 쓰되 수치 안정화
-                u0 = math.normalize(a.axis[0]);
-                // a.axis[1]을 u0에 직교화
-                float3 t1 = a.axis[1] - math.dot(a.axis[1], u0) * u0;
-                float t1Len = math.length(t1);
-                if (t1Len < 1e-6f)
+                if (axes == null) continue;
+
+                var candidateOBB = ComputeOBBWithFixedAxes(a, b, axes);
+                float volume = candidateOBB.halfSize.x * candidateOBB.halfSize.y * candidateOBB.halfSize.z;
+
+                if (volume < bestVolume)
                 {
-                    // degeneracy 방지
-                    t1 = math.normalize(math.cross(u0, new float3(0, 1, 0)));
-                    if (math.lengthsq(t1) < 1e-6f) t1 = math.normalize(math.cross(u0, new float3(1, 0, 0)));
+                    bestVolume = volume;
+                    bestOBB = candidateOBB;
                 }
-                u1 = math.normalize(t1);
-                u2 = math.normalize(math.cross(u0, u1));
             }
 
-            // 2) A와 B의 꼭짓점 모으기
+            return bestOBB;
+        }
+
+        private static OBB ComputeOBBWithFixedAxes(OBB a, OBB b, float3[] axes)
+        {
+            // 축들을 정규직교화
+            float3 u0 = math.normalize(axes[0]);
+            float3 u1 = math.normalize(axes[1] - math.dot(axes[1], u0) * u0);
+            float3 u2 = math.normalize(math.cross(u0, u1));
+
+            // 수치 안정성 체크
+            if (math.lengthsq(u1) < 1e-6f)
+            {
+                u1 = math.normalize(math.cross(u0, new float3(0, 1, 0)));
+                if (math.lengthsq(u1) < 1e-6f)
+                    u1 = math.normalize(math.cross(u0, new float3(1, 0, 0)));
+                u2 = math.normalize(math.cross(u0, u1));
+            }
+
+            // A, B 꼭짓점들을 새 축에 투영
             var va = a.GetVertices();
             var vb = b.GetVertices();
 
-            // 3) 새 축(u0,u1,u2)에 투영해서 최소 OBB 구하기 (이 축들에 한정된 최소)
             float3 minProj = new float3(float.PositiveInfinity);
             float3 maxProj = new float3(float.NegativeInfinity);
 
-            void AccProj(float3 p)
+            void ProjectPoint(float3 p)
             {
                 float p0 = math.dot(p, u0);
                 float p1 = math.dot(p, u1);
@@ -72,18 +85,53 @@ namespace CustomPhysics
                 maxProj = math.max(maxProj, new float3(p0, p1, p2));
             }
 
-            for (int i = 0; i < 8; ++i) { AccProj(va[i]); AccProj(vb[i]); }
+            for (int i = 0; i < 8; ++i)
+            {
+                ProjectPoint(va[i]);
+                ProjectPoint(vb[i]);
+            }
 
             float3 centerLocal = 0.5f * (minProj + maxProj);
             float3 halfSize = 0.5f * (maxProj - minProj);
 
-            // 4) 로컬 중심을 월드로 복원
-            float3 center =
-                centerLocal.x * u0 +
-                centerLocal.y * u1 +
-                centerLocal.z * u2;
+            float3 center = centerLocal.x * u0 + centerLocal.y * u1 + centerLocal.z * u2;
 
             return new OBB(center, new float3[] { u0, u1, u2 }, halfSize);
+        }
+
+        // 추가: 각도 차이가 작을 때의 최적화된 버전
+        public static OBB ComputeSweptOBBFromOBB_Optimized(OBB a, OBB b)
+        {
+            float3 moveVec = b.center - a.center;
+            float moveLen = math.length(moveVec);
+
+            // 각 축별 각도 차이 계산
+            float maxAngleDiff = 0f;
+            for (int i = 0; i < 3; i++)
+            {
+                float dot = math.clamp(math.dot(a.axis[i], b.axis[i]), -1f, 1f);
+                float angle = math.acos(math.abs(dot));
+                maxAngleDiff = math.max(maxAngleDiff, angle);
+            }
+
+            // 각도 차이가 작고 이동도 작으면 단순화된 처리
+            if (maxAngleDiff < math.radians(15f) && moveLen < math.length(a.halfSize) * 0.5f)
+            {
+                // A, B의 평균 축을 사용하여 더 타이트하게
+                float3[] avgAxes = new float3[3];
+                for (int i = 0; i < 3; i++)
+                {
+                    // 축 방향이 반대면 하나를 뒤집어서 평균
+                    float dot = math.dot(a.axis[i], b.axis[i]);
+                    float3 bAxis = dot >= 0 ? b.axis[i] : -b.axis[i];
+                    avgAxes[i] = math.normalize(a.axis[i] + bAxis);
+                }
+
+                return ComputeOBBWithFixedAxes(a, b, avgAxes);
+            }
+
+            // 각도 차이가 크면 기존 방식 사용
+            return ComputeSweptOBBFromOBB(a, b);
         }
 
         public static OBB ComputeSweptOBBFromCapsule(Capsule a, Capsule b)
