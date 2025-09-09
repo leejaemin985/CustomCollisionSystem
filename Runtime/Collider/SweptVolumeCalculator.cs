@@ -99,149 +99,284 @@ namespace CustomPhysics
             return new OBB(center, new float3[] { u0, u1, u2 }, halfSize);
         }
 
-        // 추가: 각도 차이가 작을 때의 최적화된 버전
-        public static OBB ComputeSweptOBBFromOBB_Optimized(OBB a, OBB b)
-        {
-            float3 moveVec = b.center - a.center;
-            float moveLen = math.length(moveVec);
 
-            // 각 축별 각도 차이 계산
-            float maxAngleDiff = 0f;
-            for (int i = 0; i < 3; i++)
-            {
-                float dot = math.clamp(math.dot(a.axis[i], b.axis[i]), -1f, 1f);
-                float angle = math.acos(math.abs(dot));
-                maxAngleDiff = math.max(maxAngleDiff, angle);
-            }
-
-            // 각도 차이가 작고 이동도 작으면 단순화된 처리
-            if (maxAngleDiff < math.radians(15f) && moveLen < math.length(a.halfSize) * 0.5f)
-            {
-                // A, B의 평균 축을 사용하여 더 타이트하게
-                float3[] avgAxes = new float3[3];
-                for (int i = 0; i < 3; i++)
-                {
-                    // 축 방향이 반대면 하나를 뒤집어서 평균
-                    float dot = math.dot(a.axis[i], b.axis[i]);
-                    float3 bAxis = dot >= 0 ? b.axis[i] : -b.axis[i];
-                    avgAxes[i] = math.normalize(a.axis[i] + bAxis);
-                }
-
-                return ComputeOBBWithFixedAxes(a, b, avgAxes);
-            }
-
-            // 각도 차이가 크면 기존 방식 사용
-            return ComputeSweptOBBFromOBB(a, b);
-        }
 
         public static OBB ComputeSweptOBBFromCapsule(Capsule a, Capsule b)
         {
-            // --- Capsule → OBB: 반지름과 축을 보존하는 타이트한 근사 ---
-            static OBB CapsuleToOBB(Capsule c)
+            // 1) 먼저 간단한 경우들 체크
+            float3 moveVec = b.center - a.center;
+            float moveLen = math.length(moveVec);
+
+            // 캡슐 축 방향들
+            float3 dirA = a.Direction;  // math.normalize(a.pointB - a.pointA)
+            float3 dirB = b.Direction;
+
+            // 축 간 각도 차이 계산
+            float axisDot = math.clamp(math.dot(dirA, dirB), -1f, 1f);
+            float axisAngle = math.acos(math.abs(axisDot));  // 0 ~ π/2
+
+            // 반지름 차이
+            float radiusDiff = math.abs(b.radius - a.radius);
+            float avgRadius = (a.radius + b.radius) * 0.5f;
+
+            // 2) 경우별 최적화
+
+            // Case 1: 거의 변화가 없는 경우 - 단순 확장
+            if (axisAngle < math.radians(5f) &&
+                moveLen < avgRadius &&
+                radiusDiff < avgRadius * 0.1f)
             {
-                float3 upDir = c.pointB - c.pointA;
-                float h = math.length(upDir);
-
-                float3 up = h > 1e-6f ? upDir / h : new float3(0, 1, 0);
-
-                // 임의 직교 벡터 선택
-                float3 pick = math.abs(math.dot(up, new float3(0, 1, 0))) < 0.999f
-                    ? new float3(0, 1, 0)
-                    : new float3(1, 0, 0);
-
-                float3 forward = math.normalize(math.cross(up, pick));
-                float3 right = math.normalize(math.cross(forward, up));
-                forward = math.normalize(math.cross(right, up)); // 수치 안정화
-
-                // 캡슐 외접 OBB halfSize: X/Z는 radius, Y는 (halfHeight + radius)
-                float halfHeight = h * 0.5f;
-                float3 halfSize = new float3(c.radius, halfHeight + c.radius, c.radius);
-
-                float3 center = (c.pointA + c.pointB) * 0.5f;
-
-                return new OBB(center, new float3[] { right, up, forward }, halfSize);
+                return ComputeSimpleExpandedCapsuleOBB(a, b);
             }
 
-            OBB obbA = CapsuleToOBB(a);
-            OBB obbB = CapsuleToOBB(b);
-
-            // A/B 꼭짓점 수집
-            var va = obbA.GetVertices();
-            var vb = obbB.GetVertices();
-
-            float3[] pts = new float3[16];
-            for (int i = 0; i < 8; ++i) { pts[i] = va[i]; pts[i + 8] = vb[i]; }
-
-            // --- 새 기준축 구성: 이동 방향 우선 ---
-            float3 move = obbB.center - obbA.center;
-            float mLen = math.length(move);
-
-            float3 u0, u1, u2;
-            if (mLen > 1e-6f)
+            // Case 2: 평행 이동이 주된 경우
+            if (axisAngle < math.radians(15f) && moveLen > avgRadius)
             {
-                u0 = move / mLen; // 이동 방향
+                return ComputeTranslationDominantCapsuleOBB(a, b);
+            }
 
-                // obbA.axis 중 u0와 가장 수직인 축을 시드로 골라 직교화
-                int seed = 0;
-                float minAbsDot = float.MaxValue;
-                for (int i = 0; i < 3; ++i)
+            // Case 3: 회전이 주된 경우  
+            if (axisAngle > math.radians(30f) && moveLen < avgRadius)
+            {
+                return ComputeRotationDominantCapsuleOBB(a, b);
+            }
+
+            // Case 4: 복합 케이스 - 다중 후보 테스트
+            return ComputeMultiCandidateCapsuleOBB(a, b);
+        }
+
+        private static OBB ComputeSimpleExpandedCapsuleOBB(Capsule a, Capsule b)
+        {
+            // 거의 변화가 없으면 두 캡슐을 포함하는 최소 OBB
+            float3 avgDir = math.normalize(a.Direction + b.Direction);
+
+            // 평균 방향을 Y축으로 하는 좌표계 구성
+            float3 up = avgDir;
+            float3 right = math.normalize(math.cross(up, new float3(0, 0, 1)));
+            if (math.lengthsq(right) < 1e-6f)
+                right = math.normalize(math.cross(up, new float3(1, 0, 0)));
+            float3 forward = math.normalize(math.cross(right, up));
+
+            // 모든 관련 점들을 새 좌표계에 투영
+            float3[] points = new float3[]
+            {
+        a.pointA, a.pointB, b.pointA, b.pointB,
+        a.center, b.center
+            };
+
+            return ComputeOBBFromPointsAndAxes(points, new float3[] { right, up, forward },
+                                               math.max(a.radius, b.radius));
+        }
+
+        private static OBB ComputeTranslationDominantCapsuleOBB(Capsule a, Capsule b)
+        {
+            // 이동이 주된 경우: 이동 방향을 고려한 축 구성
+            float3 moveDir = math.normalize(b.center - a.center);
+            float3 avgCapsuleDir = math.normalize(a.Direction + b.Direction);
+
+            // 이동 방향과 캡슐 방향을 모두 고려한 최적 축 구성
+            float3 primaryAxis;
+            float moveDirDot = math.abs(math.dot(moveDir, avgCapsuleDir));
+
+            if (moveDirDot > 0.8f) // 이동과 캡슐 방향이 비슷하면 캡슐 방향 우선
+            {
+                primaryAxis = avgCapsuleDir;
+            }
+            else // 다르면 이동 방향 우선
+            {
+                primaryAxis = moveDir;
+            }
+
+            float3 secondaryAxis = math.normalize(math.cross(primaryAxis, avgCapsuleDir));
+            if (math.lengthsq(secondaryAxis) < 1e-6f)
+                secondaryAxis = math.normalize(math.cross(primaryAxis, new float3(0, 1, 0)));
+
+            float3 tertiaryAxis = math.normalize(math.cross(primaryAxis, secondaryAxis));
+
+            float3[] points = new float3[] { a.pointA, a.pointB, b.pointA, b.pointB };
+
+            return ComputeOBBFromPointsAndAxes(points,
+                                               new float3[] { primaryAxis, secondaryAxis, tertiaryAxis },
+                                               math.max(a.radius, b.radius));
+        }
+
+        private static OBB ComputeRotationDominantCapsuleOBB(Capsule a, Capsule b)
+        {
+            // 회전이 주된 경우: 두 캡슐의 모든 끝점을 고려
+
+            // 회전 중심점 추정 (두 캡슐 중심의 중점)
+            float3 rotCenter = (a.center + b.center) * 0.5f;
+
+            // 회전으로 인한 확장을 고려한 포인트들
+            float3[] keyPoints = new float3[]
+            {
+        a.pointA, a.pointB, b.pointA, b.pointB,
+        // 회전 중심에서 가장 먼 점들도 추가
+        a.center + math.normalize(a.center - rotCenter) * (a.Height * 0.5f + a.radius),
+        b.center + math.normalize(b.center - rotCenter) * (b.Height * 0.5f + b.radius)
+            };
+
+            // 가장 적절한 축 찾기 - PCA 기반 접근
+            float3 centroid = float3.zero;
+            foreach (var p in keyPoints) centroid += p;
+            centroid /= keyPoints.Length;
+
+            // 공분산 행렬 기반 주축 계산 (간단 버전)
+            float3 primaryDir = ComputePrimaryDirection(keyPoints, centroid);
+
+            float3 right = math.normalize(math.cross(primaryDir, new float3(0, 1, 0)));
+            if (math.lengthsq(right) < 1e-6f)
+                right = math.normalize(math.cross(primaryDir, new float3(1, 0, 0)));
+            float3 forward = math.normalize(math.cross(right, primaryDir));
+
+            return ComputeOBBFromPointsAndAxes(keyPoints,
+                                               new float3[] { right, primaryDir, forward },
+                                               math.max(a.radius, b.radius));
+        }
+
+        private static OBB ComputeMultiCandidateCapsuleOBB(Capsule a, Capsule b)
+        {
+            // 여러 축 조합을 시도해서 가장 타이트한 것 선택
+            OBB bestOBB = default;
+            float bestVolume = float.MaxValue;
+
+            // 후보 축들
+            float3[][] axisCandidates = new float3[][]
+            {
+        // A 캡슐 기준
+        CreateAxesFromCapsule(a),
+        
+        // B 캡슐 기준  
+        CreateAxesFromCapsule(b),
+        
+        // 평균 방향 기준
+        CreateAxesFromAverageDirection(a, b),
+        
+        // 이동 방향 기준 (이동이 충분할 때만)
+        math.length(b.center - a.center) > 1e-3f ?
+            CreateAxesFromMoveDirection(a, b) : null
+            };
+
+            float3[] allPoints = new float3[] { a.pointA, a.pointB, b.pointA, b.pointB };
+            float maxRadius = math.max(a.radius, b.radius);
+
+            foreach (var axes in axisCandidates)
+            {
+                if (axes == null) continue;
+
+                var candidateOBB = ComputeOBBFromPointsAndAxes(allPoints, axes, maxRadius);
+                float volume = candidateOBB.halfSize.x * candidateOBB.halfSize.y * candidateOBB.halfSize.z;
+
+                if (volume < bestVolume)
                 {
-                    float d = math.abs(math.dot(obbA.axis[i], u0));
-                    if (d < minAbsDot) { minAbsDot = d; seed = i; }
+                    bestVolume = volume;
+                    bestOBB = candidateOBB;
+                }
+            }
+
+            return bestOBB;
+        }
+
+        // 헬퍼 함수들
+        private static float3[] CreateAxesFromCapsule(Capsule c)
+        {
+            float3 up = c.Direction;
+            float3 right = math.normalize(math.cross(up, new float3(0, 0, 1)));
+            if (math.lengthsq(right) < 1e-6f)
+                right = math.normalize(math.cross(up, new float3(1, 0, 0)));
+            float3 forward = math.normalize(math.cross(right, up));
+
+            return new float3[] { right, up, forward };
+        }
+
+        private static float3[] CreateAxesFromAverageDirection(Capsule a, Capsule b)
+        {
+            float3 avgDir = math.normalize(a.Direction + b.Direction);
+            float3 right = math.normalize(math.cross(avgDir, new float3(0, 0, 1)));
+            if (math.lengthsq(right) < 1e-6f)
+                right = math.normalize(math.cross(avgDir, new float3(1, 0, 0)));
+            float3 forward = math.normalize(math.cross(right, avgDir));
+
+            return new float3[] { right, avgDir, forward };
+        }
+
+        private static float3[] CreateAxesFromMoveDirection(Capsule a, Capsule b)
+        {
+            float3 moveDir = math.normalize(b.center - a.center);
+            float3 avgCapsuleDir = math.normalize(a.Direction + b.Direction);
+
+            float3 right = math.normalize(math.cross(moveDir, avgCapsuleDir));
+            if (math.lengthsq(right) < 1e-6f)
+                right = math.normalize(math.cross(moveDir, new float3(0, 1, 0)));
+            float3 forward = math.normalize(math.cross(right, moveDir));
+
+            return new float3[] { right, moveDir, forward };
+        }
+
+        private static float3 ComputePrimaryDirection(float3[] points, float3 centroid)
+        {
+            // 간단한 PCA - 분산이 가장 큰 방향 찾기
+            float3 bestDir = new float3(1, 0, 0);
+            float maxVariance = 0f;
+
+            // 몇 개 후보 방향으로 테스트
+            float3[] candidates = new float3[]
+            {
+        new float3(1, 0, 0), new float3(0, 1, 0), new float3(0, 0, 1),
+        math.normalize(points[0] - centroid),
+        math.normalize(points[points.Length-1] - centroid)
+            };
+
+            foreach (var dir in candidates)
+            {
+                float variance = 0f;
+                foreach (var point in points)
+                {
+                    float proj = math.dot(point - centroid, dir);
+                    variance += proj * proj;
                 }
 
-                float3 t1 = obbA.axis[seed] - math.dot(obbA.axis[seed], u0) * u0;
-                float l1 = math.length(t1);
-                if (l1 < 1e-6f)
+                if (variance > maxVariance)
                 {
-                    // 드문 병렬 특이상황 회피
-                    t1 = math.normalize(math.cross(u0, new float3(0, 1, 0)));
-                    if (math.lengthsq(t1) < 1e-6f) t1 = math.normalize(math.cross(u0, new float3(1, 0, 0)));
+                    maxVariance = variance;
+                    bestDir = dir;
                 }
-                u1 = math.normalize(t1);
-                u2 = math.normalize(math.cross(u0, u1));
             }
-            else
+
+            return math.normalize(bestDir);
+        }
+
+        private static OBB ComputeOBBFromPointsAndAxes(float3[] points, float3[] axes, float radius)
+        {
+            // 축들을 정규직교화
+            float3 u0 = math.normalize(axes[0]);
+            float3 u1 = math.normalize(axes[1] - math.dot(axes[1], u0) * u0);
+            float3 u2 = math.normalize(math.cross(u0, u1));
+
+            // 포인트들을 축에 투영
+            float3 minProj = new float3(float.PositiveInfinity);
+            float3 maxProj = new float3(float.NegativeInfinity);
+
+            foreach (var point in points)
             {
-                // 이동 거의 없음: obbA 기준으로 안정적인 직교기저 생성
-                u0 = math.normalize(obbA.axis[0]);
-
-                float3 t1 = obbA.axis[1] - math.dot(obbA.axis[1], u0) * u0;
-                float l1 = math.length(t1);
-                if (l1 < 1e-6f)
-                {
-                    t1 = math.normalize(math.cross(u0, new float3(0, 1, 0)));
-                    if (math.lengthsq(t1) < 1e-6f) t1 = math.normalize(math.cross(u0, new float3(1, 0, 0)));
-                }
-                u1 = math.normalize(t1);
-                u2 = math.normalize(math.cross(u0, u1));
+                float3 proj = new float3(
+                    math.dot(point, u0),
+                    math.dot(point, u1),
+                    math.dot(point, u2)
+                );
+                minProj = math.min(minProj, proj);
+                maxProj = math.max(maxProj, proj);
             }
 
-            // --- 투영으로 최소 바운딩(해당 축계 한정) ---
-            float3 minP = new float3(float.PositiveInfinity);
-            float3 maxP = new float3(float.NegativeInfinity);
+            // 반지름만큼 확장
+            float3 halfSize = 0.5f * (maxProj - minProj) + new float3(radius);
+            float3 centerLocal = 0.5f * (minProj + maxProj);
 
-            void Acc(float3 p)
-            {
-                float p0 = math.dot(p, u0);
-                float p1 = math.dot(p, u1);
-                float p2 = math.dot(p, u2);
-                minP = math.min(minP, new float3(p0, p1, p2));
-                maxP = math.max(maxP, new float3(p0, p1, p2));
-            }
-
-            for (int i = 0; i < 16; ++i) Acc(pts[i]);
-
-            float3 centerLocal = 0.5f * (minP + maxP);
-            float3 halfSize = 0.5f * (maxP - minP);
-
-            float3 center =
-                centerLocal.x * u0 +
-                centerLocal.y * u1 +
-                centerLocal.z * u2;
+            float3 center = centerLocal.x * u0 + centerLocal.y * u1 + centerLocal.z * u2;
 
             return new OBB(center, new float3[] { u0, u1, u2 }, halfSize);
         }
+
 
 
         public static Capsule ComputeSweptCapsuleFromSphere(Sphere prev, Sphere curr)
