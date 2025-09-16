@@ -173,7 +173,7 @@ namespace CustomPhysics
 
         private static CollisionInfo GetOBBCollisionInfo(OBB a, OBB b)
         {
-            const int maxPoints = 8;  // 최대 충돌점 예상 개수
+            const int maxPoints = 8;
             float3[] aPointsInB = new float3[maxPoints];
             int aCount = 0;
 
@@ -183,6 +183,7 @@ namespace CustomPhysics
             float3[] aVerts = a.GetVertices();
             float3[] bVerts = b.GetVertices();
 
+            // A의 점들이 B 안에 있는지 확인
             for (int i = 0; i < aVerts.Length; i++)
             {
                 if (IsPointInsideOBB(aVerts[i], b))
@@ -192,6 +193,7 @@ namespace CustomPhysics
                 }
             }
 
+            // B의 점들이 A 안에 있는지 확인
             for (int i = 0; i < bVerts.Length; i++)
             {
                 if (IsPointInsideOBB(bVerts[i], a))
@@ -201,33 +203,67 @@ namespace CustomPhysics
                 }
             }
 
-            float3 contactA;
-            if (aCount == 0)
+            float3 contactA, contactB;
+
+            if (aCount > 0 && bCount > 0)
             {
-                contactA = a.center;
-            }
-            else
-            {
+                // 양쪽 모두에 점이 있으면 평균 사용
                 contactA = float3.zero;
                 for (int i = 0; i < aCount; i++)
                     contactA += aPointsInB[i];
                 contactA /= aCount;
-            }
 
-            float3 contactB;
-            if (bCount == 0)
-            {
-                contactB = b.center;
-            }
-            else
-            {
                 contactB = float3.zero;
                 for (int i = 0; i < bCount; i++)
                     contactB += bPointsInA[i];
                 contactB /= bCount;
             }
+            else if (aCount > 0)
+            {
+                // A의 점만 B 안에 있는 경우
+                contactA = float3.zero;
+                for (int i = 0; i < aCount; i++)
+                    contactA += aPointsInB[i];
+                contactA /= aCount;
+
+                // B의 접촉점은 A의 접촉점에서 가장 가까운 B 표면의 점
+                contactB = GetClosestPointOnOBB(contactA, b);
+            }
+            else if (bCount > 0)
+            {
+                // B의 점만 A 안에 있는 경우
+                contactB = float3.zero;
+                for (int i = 0; i < bCount; i++)
+                    contactB += bPointsInA[i];
+                contactB /= bCount;
+
+                // A의 접촉점은 B의 접촉점에서 가장 가까운 A 표면의 점
+                contactA = GetClosestPointOnOBB(contactB, a);
+            }
+            else
+            {
+                // 아무 점도 내부에 없는 경우 (면이나 모서리 접촉)
+                // 각 OBB에서 상대방에 가장 가까운 점 찾기
+                contactA = GetClosestPointOnOBB(b.center, a);
+                contactB = GetClosestPointOnOBB(a.center, b);
+            }
 
             return new CollisionInfo(true, contactA, contactB);
+        }
+
+        private static float3 GetClosestPointOnOBB(float3 point, OBB obb)
+        {
+            float3 dir = point - obb.center;
+            float3 closest = obb.center;
+
+            for (int i = 0; i < 3; i++)
+            {
+                float projection = math.dot(dir, obb.axis[i]);
+                projection = math.clamp(projection, -obb.halfSize[i], obb.halfSize[i]);
+                closest += obb.axis[i] * projection;
+            }
+
+            return closest;
         }
 
         static bool IsPointInsideOBB(float3 point, OBB obb)
@@ -391,10 +427,11 @@ namespace CustomPhysics
             if (distSqr > radiusSq)
                 return CollisionInfo.None;
 
-            float3 normal = distSqr > epsilon ? math.normalize(difference) : obb.axis[1];
+            float dist = math.sqrt(distSqr);
+            float3 normal = dist > epsilon ? math.normalize(difference) : obb.axis[1];
 
-            float3 contactPointA = closestPoint;
-            float3 contactPointB = sphere.center - normal * sphere.radius;
+            float3 contactPointA = closestPoint; // OBB 표면의 점
+            float3 contactPointB = sphere.center - normal * sphere.radius; // 스피어 표면의 점
 
             return new CollisionInfo(true, contactPointA, contactPointB);
         }
@@ -443,8 +480,8 @@ namespace CustomPhysics
             float3 pA_local = math.mul(math.transpose(obbRotation), dA);
             float3 pB_local = math.mul(math.transpose(obbRotation), dB);
 
-            // 2) AABB (OBB 반크기) 와 선분 간 최단 거리 샘플링 계산
-            float3 closestSeg_local = float3.zero, closestBox_local = float3.zero;
+            // 2) AABB와 선분 간 최단 거리 계산
+            float3 closestSeg_local, closestBox_local;
             float distSq = ClosestPtSegmentAABB(pA_local, pB_local, obb.halfSize, out closestSeg_local, out closestBox_local);
 
             float radiusSq = capsule.radius * capsule.radius;
@@ -452,11 +489,17 @@ namespace CustomPhysics
                 return CollisionInfo.None;
 
             float dist = math.sqrt(distSq);
-            float3 normal_local = dist > epsilon ? math.normalize(closestBox_local - closestSeg_local) : new float3(0, 1, 0);
 
-            // 3) 로컬 좌표 접촉점 → 월드 좌표계 변환
-            float3 contactA = obb.center + math.mul(obbRotation, closestBox_local);
-            float3 contactB = obb.center + math.mul(obbRotation, closestSeg_local) + normal_local * capsule.radius;
+            // 3) 법선 벡터 계산 (선분 → 박스 방향)
+            float3 normal_local = dist > epsilon ? math.normalize(closestBox_local - closestSeg_local) : new float3(0, 1, 0);
+            float3 normal_world = math.mul(obbRotation, normal_local);
+
+            // 4) 접촉점 계산
+            float3 segmentPoint_world = obb.center + math.mul(obbRotation, closestSeg_local);
+            float3 boxPoint_world = obb.center + math.mul(obbRotation, closestBox_local);
+
+            float3 contactA = boxPoint_world; // OBB의 접촉점
+            float3 contactB = segmentPoint_world - normal_world * capsule.radius; // 캡슐 표면의 접촉점
 
             return new CollisionInfo(true, contactA, contactB);
         }
