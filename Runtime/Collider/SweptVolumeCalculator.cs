@@ -156,11 +156,12 @@ namespace CustomPhysics
         {
             float3 movement = next.center - current.center;
             float distance = math.length(movement);
+            float radius = current.radius;
 
             if (!IsValidMovement(distance, "Sphere"))
             {
                 // 움직임이 없으면 작은 캡슐로 변환
-                float radius = math.max(current.radius, next.radius);
+                radius = math.max(current.radius, next.radius);
                 float3 center = next.center;
                 return new Capsule(
                     center + new float3(0, radius * 0.1f, 0),
@@ -169,7 +170,7 @@ namespace CustomPhysics
                 );
             }
 
-            float radius = math.max(current.radius, next.radius);
+            radius = math.max(current.radius, next.radius);
             return new Capsule(current.center, next.center, radius);
         }
         #endregion
