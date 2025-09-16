@@ -5,7 +5,7 @@ namespace CustomPhysics
 {
     public static class SweptVolumeConfig
     {
-        public static bool EnableSweptVolume = false;
+        public static bool EnableSweptVolume = true;
         public static float MaxAllowedMovement = 3.0f;  // 이 거리 이상은 텔레포트로 간주
         public static float MinRequiredMovement = 0.05f; // 이 거리 미만은 SweptVolume 불필요
         public static bool EnableDebugLogs = false;
