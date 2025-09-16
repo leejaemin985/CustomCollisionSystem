@@ -13,6 +13,7 @@ namespace CustomPhysics
 
         public IPhysicsShape ComputeSweptVolume(IPhysicsShape next)
         {
+            return next;
             if (next is not Capsule other)
             {
                 Debug.LogError("[Physics] - Shape types must match for swept volume calcuation.");
