@@ -13,14 +13,10 @@ namespace CustomPhysics
 
         public IPhysicsShape ComputeSweptVolume(IPhysicsShape next)
         {
-            return next;
-            if (next is not Capsule other)
-            {
-                Debug.LogError("[Physics] - Shape types must match for swept volume calcuation.");
-                return null;
-            }
+            if (next is Capsule nextCapsule)
+                return SweptVolumeCalculator.ComputeSweptVolume(this, nextCapsule);
 
-            return SweptVolumeCalculator.ComputeSweptOBBFromCapsule(this, other);
+            return next;
         }
 
         public float3 pointA;

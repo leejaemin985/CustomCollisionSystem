@@ -2,387 +2,199 @@
 
 namespace CustomPhysics
 {
+    public static class SweptVolumeConfig
+    {
+        public static bool EnableSweptVolume = false;
+        public static float MaxAllowedMovement = 3.0f;  // 이 거리 이상은 텔레포트로 간주
+        public static float MinRequiredMovement = 0.05f; // 이 거리 미만은 SweptVolume 불필요
+        public static bool EnableDebugLogs = false;
+    }
+
     public static class SweptVolumeCalculator
     {
-        #region Calculate OBB From OBB
-        public static OBB ComputeSweptOBBFromOBB(OBB a, OBB b)
+        #region Main API
+        public static IPhysicsShape ComputeSweptVolume(IPhysicsShape current, IPhysicsShape next)
         {
-            float3 moveVec = b.center - a.center;
-            float moveLen = math.length(moveVec);
-
-            // 1) 여러 축 조합을 시도해서 가장 타이트한 것 선택
-            OBB bestOBB = default;
-            float bestVolume = float.MaxValue;
-
-            // 후보 축 세트들
-            float3[][] axisCandidates = new float3[][]
+            // SweptVolume 비활성화시 현재 위치만 반환
+            if (!SweptVolumeConfig.EnableSweptVolume)
             {
-        // Case 1: A의 축 기준
-        new float3[] { a.axis[0], a.axis[1], a.axis[2] },
-        
-        // Case 2: B의 축 기준  
-        new float3[] { b.axis[0], b.axis[1], b.axis[2] },
-        
-        // Case 3: 이동 방향 + A축 조합 (이동이 충분할 때만)
-        moveLen > 1e-3f ? new float3[] { moveVec / moveLen, a.axis[1], a.axis[2] } : null,
-        
-        // Case 4: 이동 방향 + B축 조합
-        moveLen > 1e-3f ? new float3[] { moveVec / moveLen, b.axis[1], b.axis[2] } : null,
-        
-        // Case 5: A와 B축의 평균 (각도 차이가 작을 때 유효)
-        new float3[] {
-            math.normalize(a.axis[0] + b.axis[0]),
-            math.normalize(a.axis[1] + b.axis[1]),
-            math.normalize(a.axis[2] + b.axis[2])
-        }
+                return next;
+            }
+
+            // 타입별 처리
+            return (current, next) switch
+            {
+                (OBB a, OBB b) => ComputeSweptOBB(a, b),
+                (Capsule a, Capsule b) => ComputeSweptCapsule(a, b),
+                (Sphere a, Sphere b) => ComputeSweptCapsule(a, b),
+                _ => next // 지원하지 않는 타입은 현재 위치 반환
             };
-
-            foreach (var axes in axisCandidates)
-            {
-                if (axes == null) continue;
-
-                var candidateOBB = ComputeOBBWithFixedAxes(a, b, axes);
-                float volume = candidateOBB.halfSize.x * candidateOBB.halfSize.y * candidateOBB.halfSize.z;
-
-                if (volume < bestVolume)
-                {
-                    bestVolume = volume;
-                    bestOBB = candidateOBB;
-                }
-            }
-
-            return bestOBB;
-        }
-
-        private static OBB ComputeOBBWithFixedAxes(OBB a, OBB b, float3[] axes)
-        {
-            // 축들을 정규직교화
-            float3 u0 = math.normalize(axes[0]);
-            float3 u1 = math.normalize(axes[1] - math.dot(axes[1], u0) * u0);
-            float3 u2 = math.normalize(math.cross(u0, u1));
-
-            // 수치 안정성 체크
-            if (math.lengthsq(u1) < 1e-6f)
-            {
-                u1 = math.normalize(math.cross(u0, new float3(0, 1, 0)));
-                if (math.lengthsq(u1) < 1e-6f)
-                    u1 = math.normalize(math.cross(u0, new float3(1, 0, 0)));
-                u2 = math.normalize(math.cross(u0, u1));
-            }
-
-            // A, B 꼭짓점들을 새 축에 투영
-            var va = a.GetVertices();
-            var vb = b.GetVertices();
-
-            float3 minProj = new float3(float.PositiveInfinity);
-            float3 maxProj = new float3(float.NegativeInfinity);
-
-            void ProjectPoint(float3 p)
-            {
-                float p0 = math.dot(p, u0);
-                float p1 = math.dot(p, u1);
-                float p2 = math.dot(p, u2);
-                minProj = math.min(minProj, new float3(p0, p1, p2));
-                maxProj = math.max(maxProj, new float3(p0, p1, p2));
-            }
-
-            for (int i = 0; i < 8; ++i)
-            {
-                ProjectPoint(va[i]);
-                ProjectPoint(vb[i]);
-            }
-
-            float3 centerLocal = 0.5f * (minProj + maxProj);
-            float3 halfSize = 0.5f * (maxProj - minProj);
-
-            float3 center = centerLocal.x * u0 + centerLocal.y * u1 + centerLocal.z * u2;
-
-            return new OBB(center, new float3[] { u0, u1, u2 }, halfSize);
         }
         #endregion
 
-        #region Calculate OBB From Capsule
-        public static OBB ComputeSweptOBBFromCapsule(Capsule a, Capsule b)
+        #region OBB SweptVolume
+        public static OBB ComputeSweptOBB(OBB current, OBB next)
         {
-            // 1) 먼저 간단한 경우들 체크
-            float3 moveVec = b.center - a.center;
-            float moveLen = math.length(moveVec);
+            float3 movement = next.center - current.center;
+            float distance = math.length(movement);
 
-            // 캡슐 축 방향들
-            float3 dirA = a.Direction;  // math.normalize(a.pointB - a.pointA)
-            float3 dirB = b.Direction;
-
-            // 축 간 각도 차이 계산
-            float axisDot = math.clamp(math.dot(dirA, dirB), -1f, 1f);
-            float axisAngle = math.acos(math.abs(axisDot));  // 0 ~ π/2
-
-            // 반지름 차이
-            float radiusDiff = math.abs(b.radius - a.radius);
-            float avgRadius = (a.radius + b.radius) * 0.5f;
-
-            // 2) 경우별 최적화
-
-            // Case 1: 거의 변화가 없는 경우 - 단순 확장
-            if (axisAngle < math.radians(5f) &&
-                moveLen < avgRadius &&
-                radiusDiff < avgRadius * 0.1f)
+            // 움직임 검증
+            if (!IsValidMovement(distance, "OBB"))
             {
-                return ComputeSimpleExpandedCapsuleOBB(a, b);
+                return next;
             }
 
-            // Case 2: 평행 이동이 주된 경우
-            if (axisAngle < math.radians(15f) && moveLen > avgRadius)
+            // 회전이 작으면 간단한 확장 방식 사용
+            if (IsSmallRotation(current, next))
             {
-                return ComputeTranslationDominantCapsuleOBB(a, b);
+                return CreateExpandedOBB(current, next);
             }
 
-            // Case 3: 회전이 주된 경우  
-            if (axisAngle > math.radians(30f) && moveLen < avgRadius)
+            // 회전이 크면 포인트 기반 계산
+            return CreateOBBFromAllVertices(current, next);
+        }
+
+        private static bool IsSmallRotation(OBB a, OBB b)
+        {
+            const float rotationThreshold = 0.9f; // cos(25도) 정도
+
+            for (int i = 0; i < 3; i++)
             {
-                return ComputeRotationDominantCapsuleOBB(a, b);
+                float dot = math.abs(math.dot(a.axis[i], b.axis[i]));
+                if (dot < rotationThreshold)
+                    return false;
+            }
+            return true;
+        }
+
+        private static OBB CreateExpandedOBB(OBB current, OBB next)
+        {
+            // 회전이 작으면 현재 축을 유지하고 크기만 확장
+            float3 minCenter = math.min(current.center, next.center);
+            float3 maxCenter = math.max(current.center, next.center);
+            float3 center = (minCenter + maxCenter) * 0.5f;
+
+            // 두 OBB를 모두 포함하는 크기 계산
+            float3 halfSize = math.max(current.halfSize, next.halfSize);
+            float3 centerOffset = math.abs(next.center - current.center) * 0.5f;
+
+            // 각 축에 대해 이동량만큼 확장
+            for (int i = 0; i < 3; i++)
+            {
+                float axisMovement = math.abs(math.dot(next.center - current.center, current.axis[i]));
+                halfSize[i] += axisMovement * 0.5f;
             }
 
-            // Case 4: 복합 케이스 - 다중 후보 테스트
-            return ComputeMultiCandidateCapsuleOBB(a, b);
+            return new OBB(center, current.axis, halfSize);
         }
 
-        private static OBB ComputeSimpleExpandedCapsuleOBB(Capsule a, Capsule b)
+        private static OBB CreateOBBFromAllVertices(OBB current, OBB next)
         {
-            // 거의 변화가 없으면 두 캡슐을 포함하는 최소 OBB
-            float3 avgDir = math.normalize(a.Direction + b.Direction);
+            // 두 OBB의 모든 정점을 포함하는 최소 OBB 계산
+            float3[] currentVerts = current.GetVertices();
+            float3[] nextVerts = next.GetVertices();
 
-            // 평균 방향을 Y축으로 하는 좌표계 구성
-            float3 up = avgDir;
-            float3 right = math.normalize(math.cross(up, new float3(0, 0, 1)));
-            if (math.lengthsq(right) < 1e-6f)
-                right = math.normalize(math.cross(up, new float3(1, 0, 0)));
-            float3 forward = math.normalize(math.cross(right, up));
-
-            // 모든 관련 점들을 새 좌표계에 투영
-            float3[] points = new float3[]
+            // 모든 점을 합친 배열
+            float3[] allPoints = new float3[16];
+            for (int i = 0; i < 8; i++)
             {
-        a.pointA, a.pointB, b.pointA, b.pointB,
-        a.center, b.center
-            };
-
-            return ComputeOBBFromPointsAndAxes(points, new float3[] { right, up, forward },
-                                               math.max(a.radius, b.radius));
-        }
-
-        private static OBB ComputeTranslationDominantCapsuleOBB(Capsule a, Capsule b)
-        {
-            // 이동이 주된 경우: 이동 방향을 고려한 축 구성
-            float3 moveDir = math.normalize(b.center - a.center);
-            float3 avgCapsuleDir = math.normalize(a.Direction + b.Direction);
-
-            // 이동 방향과 캡슐 방향을 모두 고려한 최적 축 구성
-            float3 primaryAxis;
-            float moveDirDot = math.abs(math.dot(moveDir, avgCapsuleDir));
-
-            if (moveDirDot > 0.8f) // 이동과 캡슐 방향이 비슷하면 캡슐 방향 우선
-            {
-                primaryAxis = avgCapsuleDir;
-            }
-            else // 다르면 이동 방향 우선
-            {
-                primaryAxis = moveDir;
+                allPoints[i] = currentVerts[i];
+                allPoints[i + 8] = nextVerts[i];
             }
 
-            float3 secondaryAxis = math.normalize(math.cross(primaryAxis, avgCapsuleDir));
-            if (math.lengthsq(secondaryAxis) < 1e-6f)
-                secondaryAxis = math.normalize(math.cross(primaryAxis, new float3(0, 1, 0)));
+            // 간단한 AABB 기반 OBB 생성 (정확하지만 최적화되지 않을 수 있음)
+            float3 min = allPoints[0];
+            float3 max = allPoints[0];
 
-            float3 tertiaryAxis = math.normalize(math.cross(primaryAxis, secondaryAxis));
-
-            float3[] points = new float3[] { a.pointA, a.pointB, b.pointA, b.pointB };
-
-            return ComputeOBBFromPointsAndAxes(points,
-                                               new float3[] { primaryAxis, secondaryAxis, tertiaryAxis },
-                                               math.max(a.radius, b.radius));
-        }
-
-        private static OBB ComputeRotationDominantCapsuleOBB(Capsule a, Capsule b)
-        {
-            // 회전이 주된 경우: 두 캡슐의 모든 끝점을 고려
-
-            // 회전 중심점 추정 (두 캡슐 중심의 중점)
-            float3 rotCenter = (a.center + b.center) * 0.5f;
-
-            // 회전으로 인한 확장을 고려한 포인트들
-            float3[] keyPoints = new float3[]
+            foreach (var point in allPoints)
             {
-        a.pointA, a.pointB, b.pointA, b.pointB,
-        // 회전 중심에서 가장 먼 점들도 추가
-        a.center + math.normalize(a.center - rotCenter) * (a.Height * 0.5f + a.radius),
-        b.center + math.normalize(b.center - rotCenter) * (b.Height * 0.5f + b.radius)
-            };
-
-            // 가장 적절한 축 찾기 - PCA 기반 접근
-            float3 centroid = float3.zero;
-            foreach (var p in keyPoints) centroid += p;
-            centroid /= keyPoints.Length;
-
-            // 공분산 행렬 기반 주축 계산 (간단 버전)
-            float3 primaryDir = ComputePrimaryDirection(keyPoints, centroid);
-
-            float3 right = math.normalize(math.cross(primaryDir, new float3(0, 1, 0)));
-            if (math.lengthsq(right) < 1e-6f)
-                right = math.normalize(math.cross(primaryDir, new float3(1, 0, 0)));
-            float3 forward = math.normalize(math.cross(right, primaryDir));
-
-            return ComputeOBBFromPointsAndAxes(keyPoints,
-                                               new float3[] { right, primaryDir, forward },
-                                               math.max(a.radius, b.radius));
-        }
-
-        private static OBB ComputeMultiCandidateCapsuleOBB(Capsule a, Capsule b)
-        {
-            // 여러 축 조합을 시도해서 가장 타이트한 것 선택
-            OBB bestOBB = default;
-            float bestVolume = float.MaxValue;
-
-            // 후보 축들
-            float3[][] axisCandidates = new float3[][]
-            {
-        // A 캡슐 기준
-        CreateAxesFromCapsule(a),
-        
-        // B 캡슐 기준  
-        CreateAxesFromCapsule(b),
-        
-        // 평균 방향 기준
-        CreateAxesFromAverageDirection(a, b),
-        
-        // 이동 방향 기준 (이동이 충분할 때만)
-        math.length(b.center - a.center) > 1e-3f ?
-            CreateAxesFromMoveDirection(a, b) : null
-            };
-
-            float3[] allPoints = new float3[] { a.pointA, a.pointB, b.pointA, b.pointB };
-            float maxRadius = math.max(a.radius, b.radius);
-
-            foreach (var axes in axisCandidates)
-            {
-                if (axes == null) continue;
-
-                var candidateOBB = ComputeOBBFromPointsAndAxes(allPoints, axes, maxRadius);
-                float volume = candidateOBB.halfSize.x * candidateOBB.halfSize.y * candidateOBB.halfSize.z;
-
-                if (volume < bestVolume)
-                {
-                    bestVolume = volume;
-                    bestOBB = candidateOBB;
-                }
+                min = math.min(min, point);
+                max = math.max(max, point);
             }
 
-            return bestOBB;
+            float3 center = (min + max) * 0.5f;
+            float3 size = max - min;
+            float3 halfSize = size * 0.5f;
+
+            // 축은 current의 축을 유지 (더 정교한 계산도 가능하지만 일단 단순하게)
+            return new OBB(center, current.axis, halfSize);
         }
+        #endregion
 
-        // 헬퍼 함수들
-        private static float3[] CreateAxesFromCapsule(Capsule c)
+        #region Capsule SweptVolume
+        public static Capsule ComputeSweptCapsule(Capsule current, Capsule next)
         {
-            float3 up = c.Direction;
-            float3 right = math.normalize(math.cross(up, new float3(0, 0, 1)));
-            if (math.lengthsq(right) < 1e-6f)
-                right = math.normalize(math.cross(up, new float3(1, 0, 0)));
-            float3 forward = math.normalize(math.cross(right, up));
+            float3 movement = next.center - current.center;
+            float distance = math.length(movement);
 
-            return new float3[] { right, up, forward };
-        }
-
-        private static float3[] CreateAxesFromAverageDirection(Capsule a, Capsule b)
-        {
-            float3 avgDir = math.normalize(a.Direction + b.Direction);
-            float3 right = math.normalize(math.cross(avgDir, new float3(0, 0, 1)));
-            if (math.lengthsq(right) < 1e-6f)
-                right = math.normalize(math.cross(avgDir, new float3(1, 0, 0)));
-            float3 forward = math.normalize(math.cross(right, avgDir));
-
-            return new float3[] { right, avgDir, forward };
-        }
-
-        private static float3[] CreateAxesFromMoveDirection(Capsule a, Capsule b)
-        {
-            float3 moveDir = math.normalize(b.center - a.center);
-            float3 avgCapsuleDir = math.normalize(a.Direction + b.Direction);
-
-            float3 right = math.normalize(math.cross(moveDir, avgCapsuleDir));
-            if (math.lengthsq(right) < 1e-6f)
-                right = math.normalize(math.cross(moveDir, new float3(0, 1, 0)));
-            float3 forward = math.normalize(math.cross(right, moveDir));
-
-            return new float3[] { right, moveDir, forward };
-        }
-
-        private static float3 ComputePrimaryDirection(float3[] points, float3 centroid)
-        {
-            // 간단한 PCA - 분산이 가장 큰 방향 찾기
-            float3 bestDir = new float3(1, 0, 0);
-            float maxVariance = 0f;
-
-            // 몇 개 후보 방향으로 테스트
-            float3[] candidates = new float3[]
+            if (!IsValidMovement(distance, "Capsule"))
             {
-        new float3(1, 0, 0), new float3(0, 1, 0), new float3(0, 0, 1),
-        math.normalize(points[0] - centroid),
-        math.normalize(points[points.Length-1] - centroid)
-            };
-
-            foreach (var dir in candidates)
-            {
-                float variance = 0f;
-                foreach (var point in points)
-                {
-                    float proj = math.dot(point - centroid, dir);
-                    variance += proj * proj;
-                }
-
-                if (variance > maxVariance)
-                {
-                    maxVariance = variance;
-                    bestDir = dir;
-                }
+                return next;
             }
 
-            return math.normalize(bestDir);
+            // 간단한 방식: 두 캡슐의 끝점을 연결하는 새로운 캡슐
+            float3 startPoint = current.center;
+            float3 endPoint = next.center;
+            float radius = math.max(current.radius, next.radius);
+
+            // 원래 캡슐의 길이도 고려해서 확장
+            float3 currentDir = current.Direction;
+            float3 nextDir = next.Direction;
+            float currentHalfLength = math.distance(current.pointA, current.pointB) * 0.5f;
+            float nextHalfLength = math.distance(next.pointA, next.pointB) * 0.5f;
+            float maxHalfLength = math.max(currentHalfLength, nextHalfLength);
+
+            // 시작점과 끝점을 캡슐 길이만큼 확장
+            float3 finalStart = startPoint - currentDir * maxHalfLength;
+            float3 finalEnd = endPoint + nextDir * maxHalfLength;
+
+            return new Capsule(finalStart, finalEnd, radius);
         }
 
-        private static OBB ComputeOBBFromPointsAndAxes(float3[] points, float3[] axes, float radius)
+        public static Capsule ComputeSweptCapsule(Sphere current, Sphere next)
         {
-            // 축들을 정규직교화
-            float3 u0 = math.normalize(axes[0]);
-            float3 u1 = math.normalize(axes[1] - math.dot(axes[1], u0) * u0);
-            float3 u2 = math.normalize(math.cross(u0, u1));
+            float3 movement = next.center - current.center;
+            float distance = math.length(movement);
 
-            // 포인트들을 축에 투영
-            float3 minProj = new float3(float.PositiveInfinity);
-            float3 maxProj = new float3(float.NegativeInfinity);
-
-            foreach (var point in points)
+            if (!IsValidMovement(distance, "Sphere"))
             {
-                float3 proj = new float3(
-                    math.dot(point, u0),
-                    math.dot(point, u1),
-                    math.dot(point, u2)
+                // 움직임이 없으면 작은 캡슐로 변환
+                float radius = math.max(current.radius, next.radius);
+                float3 center = next.center;
+                return new Capsule(
+                    center + new float3(0, radius * 0.1f, 0),
+                    center - new float3(0, radius * 0.1f, 0),
+                    radius
                 );
-                minProj = math.min(minProj, proj);
-                maxProj = math.max(maxProj, proj);
             }
 
-            // 반지름만큼 확장
-            float3 halfSize = 0.5f * (maxProj - minProj) + new float3(radius);
-            float3 centerLocal = 0.5f * (minProj + maxProj);
-
-            float3 center = centerLocal.x * u0 + centerLocal.y * u1 + centerLocal.z * u2;
-
-            return new OBB(center, new float3[] { u0, u1, u2 }, halfSize);
+            float radius = math.max(current.radius, next.radius);
+            return new Capsule(current.center, next.center, radius);
         }
         #endregion
 
-        #region Calculate Capsule From Sphere
-        public static Capsule ComputeSweptCapsuleFromSphere(Sphere prev, Sphere curr)
+        #region Utility Methods
+        private static bool IsValidMovement(float distance, string shapeType)
         {
-            return new Capsule(prev.center, curr.center, math.max(prev.radius, curr.radius));
+            //if (distance > SweptVolumeConfig.MaxAllowedMovement)
+            //{
+            //    if (SweptVolumeConfig.EnableDebugLogs)
+            //    {
+            //        Debug.LogWarning($"[SweptVolume] {shapeType} moved too far ({distance:F2}m), treating as teleport");
+            //    }
+            //    return false;
+            //}
+
+            if (distance < SweptVolumeConfig.MinRequiredMovement)
+            {
+                if (SweptVolumeConfig.EnableDebugLogs)
+                {
+                    Debug.Log($"[SweptVolume] {shapeType} moved too little ({distance:F3}m), using current position");
+                }
+                return false;
+            }
+
+            return true;
         }
         #endregion
     }
